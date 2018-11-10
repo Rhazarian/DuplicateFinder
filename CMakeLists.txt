@@ -21,9 +21,9 @@ include_directories(${Qt5Quick_INCLUDE_DIRS})
 add_executable(DuplicateFinder main.cpp
         main_window.cpp main_window.h main_window.ui
         duplicate_finder.h duplicate_finder.cpp
-        popups/popup_window.cpp popups/popup_window.h popups/popup_window.ui
-        popups/error_popup_window.cpp popups/error_popup_window.h popups/error_popup_window.ui
-        popups/delete_popup_window.cpp popups/delete_popup_window.h popups/delete_popup_window.ui
+        popup_window.cpp popup_window.h popup_window.ui
+        error_popup_window.cpp error_popup_window.h error_popup_window.ui
+        delete_popup_window.cpp delete_popup_window.h delete_popup_window.ui
         find_duplicates.h find_duplicates.cpp)
 
 target_link_libraries(DuplicateFinder Qt5::Core)
