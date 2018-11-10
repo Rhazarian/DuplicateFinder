@@ -38,8 +38,7 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
         };
         auto get_sha256hash = [&](fs::path const& path) {
             std::array<char, 8192> buffer{};
-            std::ifstream fin(path);
-            QFile file(path.c_str());
+            std::ifstream fin(path, std::ios::binary);
             if (!fin) {
                 throw std::runtime_error("Could not get hash of \"" + path.string() + "\"");
             }
