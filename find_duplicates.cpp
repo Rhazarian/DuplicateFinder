@@ -13,51 +13,12 @@
 
 #include <QtCore>
 
+namespace fs = std::filesystem;
+
 namespace {
 
-    namespace fs = std::filesystem;
-
-    std::string get_sha256hash(fs::path const& path)
-    {
-        QFile file(path.c_str());
-        if (file.open(QFile::ReadOnly)) {
-            QCryptographicHash hash(QCryptographicHash::Sha256);
-            if (hash.addData(&file)) {
-                return hash.result().toStdString();
-            }
-        }
-        throw std::runtime_error("Could not get hash of \"" + path.string() + "\"");
-    }
-
-    bool cmp_files(fs::path const& p1, fs::path const& p2)
-    {
-        constexpr std::streamsize BUFFER_SIZE = 8192;
-        std::array<char, BUFFER_SIZE> b1{};
-        std::array<char, BUFFER_SIZE> b2{};
-        std::ifstream fin1(p1, std::ios::binary);
-        std::ifstream fin2(p2, std::ios::binary);
-        std::streamsize read = 0;
-        do {
-            fin1.read(b1.data(), BUFFER_SIZE);
-            fin2.read(b2.data(), BUFFER_SIZE);
-            read = fin2.gcount();
-            for (size_t i = 0; i < read; ++i) {
-                if (b1[i] != b2[i]) {
-                    return false;
-                }
-            }
-        } while (read > 0);
-        return true;
-    }
-
-    struct cancellation_exception : std::exception { };
-
-    void qcancellation_point()
-    {
-        if (QThread::currentThread()->isInterruptionRequested()) {
-            throw cancellation_exception();
-        }
-    }
+    struct cancellation_exception : std::exception {
+    };
 
 }
 
@@ -69,6 +30,29 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
         if (!fs::is_directory(dir)) {
             throw std::invalid_argument("Provided path should refer to a directory");
         }
+        auto qcancellation_point = [thread = QThread::currentThread()]() {
+            if (thread->isInterruptionRequested()) {
+                throw cancellation_exception();
+            }
+        };
+        auto get_sha256hash = [&](fs::path const& path) {
+            std::array<char, 8192> buffer{};
+            std::ifstream fin(path);
+            QFile file(path.c_str());
+            if (!fin) {
+                throw std::runtime_error("Could not get hash of \"" + path.string() + "\"");
+            }
+            QCryptographicHash hash(QCryptographicHash::Sha256);
+            int gcount = 0;
+            do {
+                qcancellation_point();
+                fin.read(buffer.data(), buffer.size());
+                gcount = static_cast<int>(fin.gcount());
+                hash.addData(buffer.data(), gcount);
+            }
+            while (gcount > 0);
+            return hash.result().toStdString();
+        };
         std::unordered_multimap<uintmax_t, fs::path> size_buckets;
         std::unordered_set<uintmax_t> keys;
         int file_count = 0;
@@ -111,7 +95,8 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
                             qcancellation_point();
                             on_progress_update(file_count);
                         }
-                    } catch (...) {
+                    }
+                    catch (...) {
                         std::lock_guard<std::mutex> lg(mtx);
                         if (!ex_ptr) {
                             ex_ptr = std::current_exception();
@@ -144,7 +129,8 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
         }
         qcancellation_point();
         return duplicates;
-    } catch (cancellation_exception& ex) {
+    }
+    catch (cancellation_exception& ex) {
         // No operations.
     }
     return {};

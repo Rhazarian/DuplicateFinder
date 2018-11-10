@@ -43,7 +43,7 @@ private slots:
     void validate_dir();
     void validate_regex();
     void filter_state_changed();
-    void error(QString err);
+    void scan_error(QString err);
     void finish_scan(std::vector<std::vector<std::filesystem::path>> duplicates);
     void expand_all();
     void collapse_all();
@@ -52,6 +52,9 @@ private slots:
     void set_bar_max(int max);
     void set_bar_progress(int progress);
     void validate_selection();
+
+private:
+    void error(QString err);
 
 };
 

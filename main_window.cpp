@@ -1,9 +1,11 @@
+#include <utility>
+
 #include "main_window.h"
 #include "ui_main_window.h"
 
-#include "ui_popup_window.h"
-#include "ui_error_popup_window.h"
-#include "ui_delete_popup_window.h"
+#include "popups/ui_popup_window.h"
+#include "popups/ui_error_popup_window.h"
+#include "popups/ui_delete_popup_window.h"
 
 #include "duplicate_finder.h"
 
@@ -70,7 +72,7 @@ void main_window::scan()
     auto* worker = new duplicate_finder(ui->currentDir->text().toStdString(),
             ui->filterFlag->checkState() ? std::make_optional(std::regex(ui->filterRegex->text().toStdString())) : std::nullopt);
     worker->moveToThread(scanning_thread);
-    connect(worker, &duplicate_finder::error, this, &main_window::error);
+    connect(worker, &duplicate_finder::error, this, &main_window::scan_error);
     connect(scanning_thread, &QThread::started, worker, &duplicate_finder::process);
     connect(worker, &duplicate_finder::update_bar_max, this, &main_window::set_bar_max);
     connect(worker, &duplicate_finder::update_bar_progress, this, &main_window::set_bar_progress);
@@ -112,9 +114,14 @@ void main_window::finish_scan(std::vector<std::vector<std::filesystem::path>> du
 
 void main_window::error(QString err)
 {
-    finish_scan({});
     error_popup->ui->textBrowser->setText(err);
     error_popup->open();
+}
+
+void main_window::scan_error(QString err)
+{
+    finish_scan({});
+    error(std::move(err));
 }
 
 void main_window::expand_all()
