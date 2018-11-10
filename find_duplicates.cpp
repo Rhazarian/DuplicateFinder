@@ -8,6 +8,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <algorithm>
 
 #include <boost/lockfree/queue.hpp>
 
@@ -72,10 +73,10 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
         std::vector<std::vector<fs::path>> duplicates;
         for (auto key : keys) {
             qcancellation_point();
-            if (size_buckets.count(key) > 1) {
+            if (auto count = size_buckets.count(key); count > 1) {
                 std::multimap<std::string, fs::path> hash_buckets;
                 std::set<std::string> hash_keys;
-                boost::lockfree::queue<fs::path*> paths(size_buckets.count(key));
+                boost::lockfree::queue<fs::path*> paths(count);
                 auto range = size_buckets.equal_range(key);
                 for (auto& it = range.first; it != range.second; ++it) {
                     paths.push(&it->second);
@@ -104,7 +105,8 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
                     }
                 };
                 std::vector<std::thread> threads;
-                for (auto i = 0; i < 4; ++i) {
+                auto thread_count = std::min(count, static_cast<decltype(count)>(4));
+                for (auto i = 0; i < thread_count; ++i) {
                     threads.emplace_back(consumer);
                 }
                 for (auto& thread : threads) {
