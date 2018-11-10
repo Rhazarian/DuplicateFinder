@@ -6,9 +6,9 @@
 #include <memory>
 #include <filesystem>
 
-#include "popup_window.h"
-#include "error_popup_window.h"
-#include "delete_popup_window.h"
+#include "popups/popup_window.h"
+#include "popups/error_popup_window.h"
+#include "popups/delete_popup_window.h"
 
 namespace Ui {
 class main_window;
