@@ -161,6 +161,7 @@ void main_window::delete_selected()
         if (delete_popup->exec() == QDialog::Accepted) {
             for (auto item : ui->treeWidget->selectedItems()) {
                 fs::remove(item->text(0).toStdString());
+                item->parent()->removeChild(item);
             }
         }
     } catch (std::exception& ex) {
