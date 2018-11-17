@@ -162,6 +162,7 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
     }
     catch (...) {
         duplicates.clear();
+        ex_ptr = std::current_exception();
     }
     {
         std::lock_guard<std::mutex> lg(work_wait_mtx);
