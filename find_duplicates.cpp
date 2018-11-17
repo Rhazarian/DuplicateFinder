@@ -28,11 +28,11 @@ std::vector<std::vector<fs::path>>
 find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
         std::function<void(int)> on_progress_max, std::function<void(int)> on_progress_update)
 {
+    const auto thread_count = std::min(std::thread::hardware_concurrency(), 4u);
     std::vector<std::thread> threads;
-    boost::lockfree::queue<fs::path*> paths(2);
+    boost::lockfree::queue<fs::path*> paths(4);
     std::atomic_bool work_given;
     std::atomic_bool finished;
-    const auto thread_count = std::min(std::thread::hardware_concurrency(), 4u);
     std::vector<std::atomic_bool> work_done(thread_count);
     std::condition_variable work;
     std::condition_variable done;
@@ -46,11 +46,13 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
         if (!fs::is_directory(dir)) {
             throw std::invalid_argument("Provided path should refer to a directory");
         }
+
         auto cancellation_point = [thread = QThread::currentThread()]() {
             if (thread->isInterruptionRequested()) {
                 throw cancellation_exception();
             }
         };
+
         auto get_sha256hash = [&](fs::path const& path) {
             std::array<char, 8192> buffer{};
             std::ifstream fin(path, std::ios::binary);
@@ -68,7 +70,9 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
             while (gcount > 0);
             return hash.result().toStdString();
         };
+
         int file_count = 0;
+
         auto consumer = [&](int i) {
             while (!finished) {
                 try {
@@ -105,6 +109,7 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
         for (auto i = 0; i < thread_count; ++i) {
             threads.emplace_back(consumer, i);
         }
+
         std::unordered_map<uintmax_t, std::vector<fs::path>> size_buckets;
         for (auto& path : fs::recursive_directory_iterator(dir)) {
             cancellation_point();
@@ -117,6 +122,7 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
             }
         }
         on_progress_max(file_count);
+
         file_count = 0;
         for (auto& size_bucket : size_buckets) {
             cancellation_point();
@@ -126,6 +132,7 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
                 for (auto& path : size_bucket.second) {
                     paths.push(&path);
                 }
+
                 {
                     std::lock_guard<std::mutex> lg(work_wait_mtx);
                     std::for_each(work_done.begin(), work_done.end(), [](std::atomic_bool& b) {
@@ -141,11 +148,11 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
                         return b == true;
                     });
                 });
-
                 work_given = false;
                 if (ex_ptr) {
                     std::rethrow_exception(ex_ptr);
                 }
+
                 for (auto& bucket : hash_buckets) {
                     cancellation_point();
                     if (bucket.second.size() > 1) {
@@ -164,6 +171,7 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
         duplicates.clear();
         ex_ptr = std::current_exception();
     }
+
     {
         std::lock_guard<std::mutex> lg(work_wait_mtx);
         finished = true;
