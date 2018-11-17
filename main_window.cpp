@@ -39,6 +39,8 @@ main_window::main_window(QWidget *parent) :
     ui->filterRegex->setPalette(palette);
     ui->treeWidget->setPalette(palette);
     ui->treeWidget->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    ui->treeWidget->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    ui->treeWidget->setUniformRowHeights(true);
 
     popup->setWindowModality(Qt::WindowModality::WindowModal);
     error_popup->setWindowModality(Qt::WindowModality::WindowModal);
@@ -93,10 +95,14 @@ void main_window::request_cancel_scan() {
 
 void main_window::finish_scan(std::vector<std::vector<std::filesystem::path>> duplicates) {
     popup->close();
+    ui->treeWidget->setUpdatesEnabled(false);
     ui->treeWidget->clear();
     for (size_t i = 0; i < duplicates.size(); ++i) {
         auto* top_item = new QTreeWidgetItem();
-        top_item->setText(0, QString("Group %1 (%2)").arg(std::to_string(i + 1).c_str(), duplicates[i][0].filename().c_str()));
+        fs::path& head = duplicates[i][0];
+        top_item->setText(0, QString("Group %1 (%2), files: %3, size of each: %4 bytes").
+        arg(std::to_string(i + 1).c_str(), head.filename().c_str(),
+                std::to_string(duplicates[i].size()).c_str(), std::to_string(fs::file_size(head)).c_str()));
         top_item->setFlags(top_item->flags() & ~Qt::ItemIsSelectable);
         ui->treeWidget->addTopLevelItem(top_item);
         for (auto& duplicate : duplicates[i]) {
@@ -105,6 +111,7 @@ void main_window::finish_scan(std::vector<std::vector<std::filesystem::path>> du
             top_item->addChild(item);
         }
     }
+    ui->treeWidget->setUpdatesEnabled(true);
     bool enable = !duplicates.empty();
     ui->expandAllButton->setEnabled(enable);
     ui->collapseAllButton->setEnabled(enable);
@@ -136,6 +143,7 @@ void main_window::collapse_all()
 
 void main_window::autoselect()
 {
+    ui->treeWidget->setUpdatesEnabled(false);
     for (int i = 0; i < ui->treeWidget->topLevelItemCount(); ++i) {
         auto* top_item = ui->treeWidget->topLevelItem(i);
         if (top_item->isExpanded()) {
@@ -151,6 +159,7 @@ void main_window::autoselect()
             }
         }
     }
+    ui->treeWidget->setUpdatesEnabled(true);
 }
 
 void main_window::delete_selected()
@@ -190,7 +199,8 @@ void main_window::change_dir()
 
 void main_window::validate()
 {
-    ui->scanButton->setEnabled(is_dir_valid && (!ui->filterFlag->checkState() || is_regex_valid));
+    bool enable = is_dir_valid && (!ui->filterFlag->checkState() || is_regex_valid);
+    ui->scanButton->setEnabled(enable);
 }
 
 void main_window::validate_dir()

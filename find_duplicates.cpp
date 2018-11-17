@@ -6,6 +6,7 @@
 #include <string>
 #include <set>
 #include <thread>
+#include <iostream>
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
@@ -27,11 +28,25 @@ std::vector<std::vector<fs::path>>
 find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
         std::function<void(int)> on_progress_max, std::function<void(int)> on_progress_update)
 {
+    std::vector<std::thread> threads;
+    boost::lockfree::queue<fs::path*> paths(2);
+    std::atomic_bool work_given;
+    std::atomic_bool finished;
+    const auto thread_count = std::min(std::thread::hardware_concurrency(), 4u);
+    std::vector<std::atomic_bool> work_done(thread_count);
+    std::condition_variable work;
+    std::condition_variable done;
+    std::mutex work_wait_mtx;
+    std::mutex wait_mtx;
+    std::mutex mtx;
+    std::exception_ptr ex_ptr;
+    std::map<std::string, std::vector<fs::path>> hash_buckets;
+    std::vector<std::vector<fs::path>> duplicates;
     try {
         if (!fs::is_directory(dir)) {
             throw std::invalid_argument("Provided path should refer to a directory");
         }
-        auto qcancellation_point = [thread = QThread::currentThread()]() {
+        auto cancellation_point = [thread = QThread::currentThread()]() {
             if (thread->isInterruptionRequested()) {
                 throw cancellation_exception();
             }
@@ -45,7 +60,7 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
             QCryptographicHash hash(QCryptographicHash::Sha256);
             int gcount = 0;
             do {
-                qcancellation_point();
+                cancellation_point();
                 fin.read(buffer.data(), buffer.size());
                 gcount = static_cast<int>(fin.gcount());
                 hash.addData(buffer.data(), gcount);
@@ -53,86 +68,127 @@ find_duplicates(fs::path const& dir, std::optional<std::regex> const& filter,
             while (gcount > 0);
             return hash.result().toStdString();
         };
-        std::unordered_multimap<uintmax_t, fs::path> size_buckets;
-        std::unordered_set<uintmax_t> keys;
         int file_count = 0;
+        auto consumer = [&](int i) {
+            while (!finished) {
+                try {
+                    {
+                        std::unique_lock<std::mutex> lk(work_wait_mtx);
+                        work.wait(lk, [&work_given, &work_done, i] { return work_given == true && !work_done[i]; });
+                    }
+                    fs::path* path_ptr;
+                    while (paths.pop(path_ptr) && !ex_ptr) {
+                        fs::path path = *path_ptr;
+                        auto hash = get_sha256hash(path);
+                        std::lock_guard<std::mutex> lg(mtx);
+                        hash_buckets[hash].emplace_back(std::move(path));
+                        ++file_count;
+                        cancellation_point();
+                        on_progress_update(file_count);
+                    }
+                }
+                catch (...) {
+                    std::lock_guard<std::mutex> lg(mtx);
+                    if (!ex_ptr) {
+                        ex_ptr = std::current_exception();
+                    }
+                }
+                std::lock_guard<std::mutex> lg(wait_mtx);
+                work_done[i] = true;
+                if (std::all_of(work_done.begin(), work_done.end(), [](std::atomic_bool& b) {
+                    return b == true;
+                })) {
+                    done.notify_one();
+                }
+            }
+        };
+        for (auto i = 0; i < thread_count; ++i) {
+            threads.emplace_back(consumer, i);
+        }
+        std::unordered_map<uintmax_t, std::vector<fs::path>> size_buckets;
         for (auto& path : fs::recursive_directory_iterator(dir)) {
-            qcancellation_point();
+            cancellation_point();
             if (!path.is_regular_file()) {
                 continue;
             }
             if (!filter.has_value() || std::regex_match(path.path().string(), *filter)) {
-                size_buckets.emplace(path.file_size(), path.path());
-                keys.insert(path.file_size());
+                size_buckets[path.file_size()].emplace_back(path.path());
                 ++file_count;
             }
         }
         on_progress_max(file_count);
         file_count = 0;
-        std::vector<std::vector<fs::path>> duplicates;
-        for (auto key : keys) {
-            qcancellation_point();
-            if (auto count = size_buckets.count(key); count > 1) {
-                std::multimap<std::string, fs::path> hash_buckets;
-                std::set<std::string> hash_keys;
-                boost::lockfree::queue<fs::path*> paths(count);
-                auto range = size_buckets.equal_range(key);
-                for (auto& it = range.first; it != range.second; ++it) {
-                    paths.push(&it->second);
+        for (auto& size_bucket : size_buckets) {
+            cancellation_point();
+            if (auto count = size_bucket.second.size(); count > 1) {
+                hash_buckets.clear();
+                paths.reserve(count);
+                for (auto& path : size_bucket.second) {
+                    paths.push(&path);
                 }
-                std::mutex mtx;
-                std::exception_ptr ex_ptr;
-                auto consumer = [&]() {
-                    try {
-                        fs::path* path_ptr;
-                        while (paths.pop(path_ptr) && !ex_ptr) {
-                            fs::path path = *path_ptr;
-                            auto hash = get_sha256hash(path);
-                            std::lock_guard<std::mutex> lg(mtx);
-                            hash_buckets.emplace(hash, std::move(path));
-                            hash_keys.insert(hash);
-                            ++file_count;
-                            qcancellation_point();
-                            on_progress_update(file_count);
-                        }
-                    }
-                    catch (...) {
-                        std::lock_guard<std::mutex> lg(mtx);
-                        if (!ex_ptr) {
-                            ex_ptr = std::current_exception();
-                        }
-                    }
-                };
-                std::vector<std::thread> threads;
-                auto thread_count = std::min(count, static_cast<decltype(count)>(4));
-                for (auto i = 0; i < thread_count; ++i) {
-                    threads.emplace_back(consumer);
+                {
+                    std::lock_guard<std::mutex> lg(work_wait_mtx);
+                    std::for_each(work_done.begin(), work_done.end(), [](std::atomic_bool& b) {
+                        b = false;
+                    });
+                    work_given = true;
+                    work.notify_all();
                 }
-                for (auto& thread : threads) {
-                    thread.join();
-                }
+
+                std::unique_lock<std::mutex> lk(wait_mtx);
+                done.wait(lk, [&work_done]() {
+                    return std::all_of(work_done.begin(), work_done.end(), [](std::atomic_bool& b) {
+                        return b == true;
+                    });
+                });
+
+                work_given = false;
                 if (ex_ptr) {
                     std::rethrow_exception(ex_ptr);
                 }
-                for (auto& hash_key : hash_keys) {
-                    qcancellation_point();
-                    auto bucket_size = hash_buckets.count(hash_key);
-                    if (bucket_size > 1) {
+                for (auto& bucket : hash_buckets) {
+                    cancellation_point();
+                    if (bucket.second.size() > 1) {
                         std::vector<fs::path> files;
-                        auto hash_range = hash_buckets.equal_range(hash_key);
-                        for (auto& it = hash_range.first; it != hash_range.second; ++it) {
-                            files.push_back(it->second);
+                        for (auto& file : bucket.second) {
+                            files.push_back(file);
                         }
                         duplicates.push_back(std::move(files));
                     }
                 }
             }
         }
-        qcancellation_point();
-        return duplicates;
+        cancellation_point();
     }
-    catch (cancellation_exception& ex) {
+    catch (...) {
+        duplicates.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lg(work_wait_mtx);
+        finished = true;
+        std::for_each(work_done.begin(), work_done.end(), [](std::atomic_bool& b) {
+            b = false;
+        });
+        work_given = true;
+        work.notify_all();
+    }
+
+    std::unique_lock<std::mutex> lk(wait_mtx);
+    done.wait(lk, [&work_done]() {
+        return std::all_of(work_done.begin(), work_done.end(), [](std::atomic_bool& b) {
+            return b == true;
+        });
+    });
+
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    try {
+        if (ex_ptr) {
+            std::rethrow_exception(ex_ptr);
+        }
+    } catch (cancellation_exception& ex) {
         // No operations.
     }
-    return {};
+    return duplicates;
 }

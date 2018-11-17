@@ -10,6 +10,6 @@
 
 std::vector<std::vector<std::filesystem::path>>
 find_duplicates(std::filesystem::path const& dir, std::optional<std::regex> const& filter,
-        std::function<void(int)> on_progress_max, std::function<void(int)> on_progress_update);
+        std::function<void(int)> on_progress_max_determination, std::function<void(int)> on_progress_update);
 
 #endif // FIND_DUPLICATES_H

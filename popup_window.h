@@ -24,6 +24,9 @@ public:
 
 private:
     std::unique_ptr<Ui::popup_window> ui;
+
+protected:
+    void keyPressEvent(QKeyEvent *e) override;
 };
 
 #endif // POPUP_WINDOW_H
